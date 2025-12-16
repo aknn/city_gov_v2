@@ -29,6 +29,8 @@ from .models import (
     ScoreComponents,
 )
 
+from typing import Tuple
+
 
 @dataclass
 class MunicipalContext:
@@ -550,7 +552,3 @@ class MunicipalContext:
             return False, f"District would exceed {defer_threshold}× fair share (${fair_share:,.0f})"
         
         return True, "OK"
-
-
-# Type alias for use in agent tools
-from typing import Tuple
