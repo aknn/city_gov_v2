@@ -19,6 +19,9 @@ from .scheduling_agent import scheduling_agent
 from .database import init_with_sample_data, clear_agent_outputs
 from .config import DB_PATH
 
+# Max turns for agents (more issues = more tool calls needed)
+MAX_AGENT_TURNS = 50
+
 
 async def run_formation_phase(ctx: MunicipalContext) -> str:
     """Run the Formation Agent to create project candidates."""
@@ -32,6 +35,7 @@ async def run_formation_phase(ctx: MunicipalContext) -> str:
         input="Process all open issues and create project candidates with composite value-scores. "
               "For each issue: compute value score, estimate feasibility, and create the project candidate. "
               "Then provide a summary of all created projects.",
+        max_turns=MAX_AGENT_TURNS,
     )
     
     return result.final_output
@@ -50,6 +54,7 @@ async def run_governance_phase(ctx: MunicipalContext) -> str:
               "Use tiered selection (mandates first, then urgent-critical, then value-ranked). "
               "Check equity constraints before approving each project. "
               "Provide a summary of all decisions made.",
+        max_turns=MAX_AGENT_TURNS,
     )
     
     return result.final_output
@@ -67,6 +72,7 @@ async def run_scheduling_phase(ctx: MunicipalContext) -> str:
         input="Schedule all approved projects within the planning horizon. "
               "Check resource availability, run the scheduler, and save the schedule. "
               "Report on deadline status and any infeasible projects.",
+        max_turns=MAX_AGENT_TURNS,
     )
     
     return result.final_output

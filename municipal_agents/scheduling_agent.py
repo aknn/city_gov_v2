@@ -630,14 +630,30 @@ def save_schedule(ctx: RunContextWrapper[MunicipalContext]) -> str:
     Save the current schedule to the database.
     
     Re-runs scheduling and persists results to schedule_tasks table.
+    Uses the appropriate scheduler based on problem complexity.
     """
     projects = ctx.context.get_approved_projects()
     
     if not projects:
         return "No approved projects to save."
     
-    # Run scheduler
-    scheduler = GreedyScheduler(ctx.context)
+    # Select appropriate scheduler (same logic as run_scheduler)
+    n_projects = len(projects)
+    resource_types = set(p["required_crew_type"] for p in projects)
+    tight_deadlines = sum(1 for p in projects if p.get("urgency_score", 0) > 0.7)
+    has_tight_deadlines = tight_deadlines > n_projects * 0.3
+    
+    if n_projects <= SCHEDULER_CONFIG["greedy_threshold_projects"] and \
+       len(resource_types) <= SCHEDULER_CONFIG["greedy_threshold_resource_types"]:
+        scheduler = GreedyScheduler(ctx.context)
+        scheduler_name = "Greedy"
+    elif n_projects <= SCHEDULER_CONFIG["repair_threshold_projects"] and not has_tight_deadlines:
+        scheduler = GreedyWithRepairScheduler(ctx.context)
+        scheduler_name = "Greedy with Repair"
+    else:
+        scheduler = CPSATScheduler(ctx.context)
+        scheduler_name = "CP-SAT"
+    
     scheduled, infeasible = scheduler.schedule(projects)
     
     saved_count = 0
@@ -674,7 +690,7 @@ def save_schedule(ctx: RunContextWrapper[MunicipalContext]) -> str:
         
         saved_count += 1
     
-    return f"""✓ Schedule Saved
+    return f"""✓ Schedule Saved ({scheduler_name})
 
 Tasks saved: {saved_count}
 Infeasible: {len(infeasible)}
