@@ -203,6 +203,213 @@ class GreedyWithRepairScheduler(GreedyScheduler):
         return scheduled, infeasible
 
 
+class CPSATScheduler:
+    """
+    CP-SAT constraint programming scheduler for complex scheduling.
+    
+    Used when:
+    - >20 projects
+    - Tight deadline coupling
+    - Need optimal resource utilization
+    
+    Formulation:
+    - Decision variables: start_week[p] for each project
+    - Constraints:
+      * Resource capacity per week
+      * Start + duration <= horizon
+      * Deadline preferences (soft)
+    - Objective: Minimize weighted deadline violations + maximize utilization
+    """
+    
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.horizon = ctx.planning_horizon_weeks
+    
+    def schedule(self, projects: List[Dict]) -> Tuple[List[Dict], List[int]]:
+        """
+        Solve scheduling using OR-Tools CP-SAT.
+        
+        Returns:
+            (scheduled_tasks, infeasible_project_ids)
+        """
+        from ortools.sat.python import cp_model
+        
+        if not projects:
+            return [], []
+        
+        model = cp_model.CpModel()
+        
+        # Group projects by resource type
+        by_resource: Dict[str, List[Dict]] = {}
+        for p in projects:
+            rtype = p["required_crew_type"]
+            if rtype not in by_resource:
+                by_resource[rtype] = []
+            by_resource[rtype].append(p)
+        
+        # Get resource capacities
+        capacities: Dict[str, Dict[int, int]] = {}  # resource_type -> week -> capacity
+        for rtype in by_resource.keys():
+            calendar = self.ctx.get_resource_calendar(rtype)
+            capacities[rtype] = {}
+            for entry in calendar:
+                week = entry["week_number"]
+                avail = entry["capacity"] - entry["hard_allocated"] - entry["soft_allocated"]
+                capacities[rtype][week] = max(0, avail)
+        
+        # Decision variables: start[p] = start week for project p
+        starts = {}
+        ends = {}
+        scheduled_vars = {}  # Whether project is scheduled at all
+        
+        for p in projects:
+            pid = p["project_id"]
+            duration = p["estimated_weeks"]
+            
+            # Start can be 1 to horizon - duration + 1
+            max_start = self.horizon - duration + 1
+            if max_start < 1:
+                # Can't fit in horizon
+                starts[pid] = None
+                ends[pid] = None
+                scheduled_vars[pid] = model.NewBoolVar(f"scheduled_{pid}")
+                model.Add(scheduled_vars[pid] == 0)
+                continue
+            
+            starts[pid] = model.NewIntVar(1, max_start, f"start_{pid}")
+            ends[pid] = model.NewIntVar(duration, self.horizon, f"end_{pid}")
+            scheduled_vars[pid] = model.NewBoolVar(f"scheduled_{pid}")
+            
+            # end = start + duration - 1
+            model.Add(ends[pid] == starts[pid] + duration - 1)
+        
+        # Resource capacity constraints
+        for rtype, rprojects in by_resource.items():
+            for week in range(1, self.horizon + 1):
+                capacity = capacities.get(rtype, {}).get(week, 0)
+                
+                # Sum of crew sizes for projects active in this week
+                week_usage = []
+                for p in rprojects:
+                    pid = p["project_id"]
+                    if starts[pid] is None:
+                        continue
+                    
+                    duration = p["estimated_weeks"]
+                    crew_size = p["crew_size"]
+                    
+                    # is_active = (start <= week) AND (end >= week)
+                    is_active = model.NewBoolVar(f"active_{pid}_{week}")
+                    
+                    # start <= week
+                    start_ok = model.NewBoolVar(f"start_ok_{pid}_{week}")
+                    model.Add(starts[pid] <= week).OnlyEnforceIf(start_ok)
+                    model.Add(starts[pid] > week).OnlyEnforceIf(start_ok.Not())
+                    
+                    # end >= week
+                    end_ok = model.NewBoolVar(f"end_ok_{pid}_{week}")
+                    model.Add(ends[pid] >= week).OnlyEnforceIf(end_ok)
+                    model.Add(ends[pid] < week).OnlyEnforceIf(end_ok.Not())
+                    
+                    # is_active = start_ok AND end_ok AND scheduled
+                    model.AddBoolAnd([start_ok, end_ok, scheduled_vars[pid]]).OnlyEnforceIf(is_active)
+                    model.AddBoolOr([start_ok.Not(), end_ok.Not(), scheduled_vars[pid].Not()]).OnlyEnforceIf(is_active.Not())
+                    
+                    week_usage.append(crew_size * is_active)
+                
+                if week_usage:
+                    model.Add(sum(week_usage) <= capacity)
+        
+        # Deadline penalty variables
+        deadline_violations = []
+        for p in projects:
+            pid = p["project_id"]
+            deadline_week = p.get("deadline_week")
+            
+            if deadline_week and starts[pid] is not None:
+                # violation = max(0, end - deadline)
+                violation = model.NewIntVar(0, self.horizon, f"violation_{pid}")
+                diff = model.NewIntVar(-self.horizon, self.horizon, f"diff_{pid}")
+                model.Add(diff == ends[pid] - deadline_week)
+                model.AddMaxEquality(violation, [0, diff])
+                
+                # Weight by urgency
+                urgency = p.get("urgency_score", 0.5)
+                weight = int(100 * (1 + urgency))  # Scale urgency to integer weight
+                deadline_violations.append(weight * violation)
+        
+        # Objective: Maximize scheduled projects, minimize deadline violations
+        total_scheduled = sum(scheduled_vars.values())
+        total_violations = sum(deadline_violations) if deadline_violations else 0
+        
+        # Multi-objective: prioritize scheduling, then minimize violations
+        model.Maximize(1000 * total_scheduled - total_violations)
+        
+        # Solve
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = SCHEDULER_CONFIG.get("cpsat_timeout_seconds", 30)
+        status = solver.Solve(model)
+        
+        scheduled = []
+        infeasible = []
+        
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            for p in projects:
+                pid = p["project_id"]
+                
+                if starts[pid] is None or not solver.Value(scheduled_vars[pid]):
+                    infeasible.append(pid)
+                    continue
+                
+                start_week = solver.Value(starts[pid])
+                end_week = solver.Value(ends[pid])
+                deadline_week = p.get("deadline_week")
+                
+                # Compute deadline status
+                if deadline_week is None:
+                    deadline_status = "ON_TRACK"
+                    slack_days = None
+                else:
+                    slack_weeks = deadline_week - end_week
+                    slack_days = slack_weeks * 7
+                    if slack_weeks >= 2:
+                        deadline_status = "ON_TRACK"
+                    elif slack_weeks >= 0:
+                        deadline_status = "AT_RISK"
+                    else:
+                        deadline_status = "MISSED"
+                
+                # Determine reservation type
+                confirmed = p.get("confirmed_at") is not None
+                requires_confirmation = p.get("requires_confirmation", False)
+                reservation_type = "hard" if confirmed or not requires_confirmation else "soft"
+                
+                # Allocate resources
+                resource_type = p["required_crew_type"]
+                crew_size = p["crew_size"]
+                for week in range(start_week, end_week + 1):
+                    self.ctx.allocate_resource(resource_type, week, crew_size, reservation_type)
+                
+                scheduled.append({
+                    "project_id": pid,
+                    "title": p["title"],
+                    "start_week": start_week,
+                    "end_week": end_week,
+                    "deadline_week": deadline_week,
+                    "deadline_status": deadline_status,
+                    "slack_days": slack_days,
+                    "resource_type": resource_type,
+                    "crew_assigned": crew_size,
+                    "reservation_type": reservation_type,
+                    "effective_priority": p.get("priority_rank", 999),
+                })
+        else:
+            # No solution found - all infeasible
+            infeasible = [p["project_id"] for p in projects]
+        
+        return scheduled, infeasible
+
+
 # =============================================================================
 # Tool Definitions
 # =============================================================================
@@ -314,7 +521,7 @@ def select_scheduler(ctx: RunContextWrapper[MunicipalContext]) -> str:
         scheduler = "GreedyWithRepairScheduler"
         reason = f"Medium complexity: {n_projects} projects, {tight_deadlines} tight deadlines"
     else:
-        scheduler = "CPSATScheduler (not implemented - using GreedyWithRepair)"
+        scheduler = "CPSATScheduler"
         reason = f"High complexity: {n_projects} projects, {n_resource_types} resource types, {tight_deadlines} tight deadlines"
     
     return f"""Scheduler Selection
@@ -345,13 +552,20 @@ def run_scheduler(ctx: RunContextWrapper[MunicipalContext]) -> str:
     n_projects = len(projects)
     resource_types = set(p["required_crew_type"] for p in projects)
     
+    # Check for tight deadlines
+    tight_deadlines = sum(1 for p in projects if p.get("urgency_score", 0) > 0.7)
+    has_tight_deadlines = tight_deadlines > n_projects * 0.3
+    
     if n_projects <= SCHEDULER_CONFIG["greedy_threshold_projects"] and \
        len(resource_types) <= SCHEDULER_CONFIG["greedy_threshold_resource_types"]:
         scheduler = GreedyScheduler(ctx.context)
         scheduler_name = "Greedy"
-    else:
+    elif n_projects <= SCHEDULER_CONFIG["repair_threshold_projects"] and not has_tight_deadlines:
         scheduler = GreedyWithRepairScheduler(ctx.context)
         scheduler_name = "Greedy with Repair"
+    else:
+        scheduler = CPSATScheduler(ctx.context)
+        scheduler_name = "CP-SAT (Constraint Programming)"
     
     # Run scheduling
     scheduled, infeasible = scheduler.schedule(projects)

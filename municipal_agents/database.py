@@ -410,5 +410,126 @@ def init_with_sample_data(db_path: str = DB_PATH) -> None:
     seed_sample_issues(db_path)
 
 
+def seed_large_scenario(db_path: str = DB_PATH, num_issues: int = 30) -> None:
+    """
+    Seed a larger scenario with many overlapping issues to test CP-SAT solver.
+    
+    Creates 30 issues across different categories with varying:
+    - Safety tiers (critical, severe, moderate, none)
+    - Mandate tiers (court_ordered, required, advisory, none)
+    - Costs ($100K - $50M)
+    - Durations (2-20 weeks)
+    - Resource types
+    - Urgency levels
+    """
+    import random
+    random.seed(42)  # Reproducible
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Clear existing data
+    cursor.execute("DELETE FROM schedule_tasks")
+    cursor.execute("DELETE FROM portfolio_decisions")
+    cursor.execute("DELETE FROM project_candidates")
+    cursor.execute("DELETE FROM scoring_audit")
+    cursor.execute("DELETE FROM issue_signals")
+    cursor.execute("DELETE FROM issues")
+    cursor.execute("DELETE FROM audit_log")
+    cursor.execute("UPDATE resource_calendar SET soft_allocated = 0, hard_allocated = 0")
+    
+    categories = ["Water", "Infrastructure", "Health", "Education", "Recreation", 
+                  "Public Safety", "Transportation", "Environment", "Housing", "Utilities"]
+    
+    issue_templates = [
+        # (title_template, category, safety_tier, mandate_tier, cost_range, duration_range, crew_type, urgency_range)
+        ("Emergency Water Main Break - Sector {}", "Water", "critical", "court_ordered", (20_000_000, 50_000_000), (10, 20), "water_crew", (3, 14)),
+        ("Hospital {} Equipment Failure", "Health", "critical", "required", (5_000_000, 15_000_000), (6, 12), "electrical_crew", (7, 21)),
+        ("Bridge Inspection - {} Ave", "Infrastructure", "severe", "required", (3_000_000, 10_000_000), (4, 10), "construction_crew", (14, 30)),
+        ("Fire Station {} Renovation", "Public Safety", "severe", "required", (2_000_000, 8_000_000), (8, 16), "construction_crew", (21, 45)),
+        ("School {} Safety Upgrade", "Education", "moderate", "advisory", (200_000, 1_000_000), (3, 8), "general_crew", (30, 60)),
+        ("Street Lighting - District {}", "Infrastructure", "moderate", "none", (300_000, 800_000), (4, 8), "electrical_crew", (30, 60)),
+        ("Park Renovation - {} Park", "Recreation", "none", "none", (500_000, 3_000_000), (6, 14), "general_crew", (60, 120)),
+        ("Pothole Repair Zone {}", "Transportation", "none", "none", (100_000, 500_000), (2, 6), "construction_crew", (45, 90)),
+        ("Stormwater System - Sector {}", "Water", "moderate", "advisory", (1_000_000, 6_000_000), (5, 12), "water_crew", (30, 60)),
+        ("Community Center {} Upgrade", "Recreation", "none", "none", (400_000, 1_500_000), (4, 10), "general_crew", (60, 120)),
+        ("Traffic Signal Update - {} Intersection", "Transportation", "moderate", "none", (100_000, 400_000), (2, 4), "electrical_crew", (30, 60)),
+        ("Sewer Line Replacement - {} St", "Utilities", "severe", "required", (2_000_000, 8_000_000), (8, 16), "water_crew", (14, 30)),
+        ("Affordable Housing Block {}", "Housing", "none", "advisory", (5_000_000, 20_000_000), (16, 24), "construction_crew", (90, 180)),
+        ("Emergency Shelter Upgrade - Site {}", "Housing", "moderate", "required", (1_000_000, 4_000_000), (6, 12), "construction_crew", (21, 45)),
+        ("Green Space Development - Area {}", "Environment", "none", "none", (800_000, 3_000_000), (8, 16), "general_crew", (90, 180)),
+    ]
+    
+    sector_names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Omega", "North", "South", "Central"]
+    street_names = ["Main", "Oak", "Elm", "Cedar", "Pine", "Maple", "First", "Second", "Third", "Park"]
+    park_names = ["Central", "Riverside", "Memorial", "Liberty", "Heritage", "Sunset", "Valley", "Highland"]
+    
+    issues_data = []
+    signals_data = []
+    
+    for i in range(1, num_issues + 1):
+        template = random.choice(issue_templates)
+        title_template, category, safety, mandate, cost_range, dur_range, crew, urg_range = template
+        
+        # Generate title
+        if "{}" in title_template:
+            if "Sector" in title_template or "Zone" in title_template or "District" in title_template:
+                name = random.choice(sector_names)
+            elif "St" in title_template or "Ave" in title_template or "Intersection" in title_template:
+                name = random.choice(street_names)
+            elif "Park" in title_template:
+                name = random.choice(park_names)
+            else:
+                name = str(random.randint(1, 20))
+            title = title_template.format(name)
+        else:
+            title = title_template
+        
+        # Generate values
+        cost = random.randint(cost_range[0], cost_range[1])
+        duration = random.randint(dur_range[0], dur_range[1])
+        urgency = random.randint(urg_range[0], urg_range[1])
+        population = random.randint(5000, 200000)
+        complaints = random.randint(10, 500) if safety in ("critical", "severe") else random.randint(5, 100)
+        district = random.randint(1, 8)
+        
+        issues_data.append((
+            i, title, category, f"Description for {title}", 
+            random.choice(["citizen_complaint", "facility_inspection", "emergency_report", "council_request"]),
+            district, "OPEN"
+        ))
+        
+        signals_data.append((
+            i, population, complaints, safety, mandate, cost, urgency
+        ))
+    
+    cursor.executemany(
+        """INSERT INTO issues 
+           (issue_id, title, category, description, source, district_id, status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        issues_data
+    )
+    
+    cursor.executemany(
+        """INSERT INTO issue_signals 
+           (issue_id, population_affected, complaint_count, safety_tier, mandate_tier, 
+            estimated_cost, urgency_days) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        signals_data
+    )
+    
+    conn.commit()
+    conn.close()
+    print(f"✓ Large scenario seeded ({num_issues} issues)")
+
+
+def init_large_scenario(db_path: str = DB_PATH, num_issues: int = 30) -> None:
+    """Initialize database with large scenario for CP-SAT testing."""
+    init_database(db_path)
+    seed_districts(db_path)
+    seed_resource_calendar(db_path, weeks=16)  # Extended horizon for more projects
+    seed_large_scenario(db_path, num_issues)
+
+
 if __name__ == "__main__":
     init_with_sample_data()

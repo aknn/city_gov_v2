@@ -137,6 +137,9 @@ SCHEDULER_CONFIG = {
     
     # Greedy with repair
     "max_repair_iterations": 3,
+    
+    # CP-SAT solver settings
+    "cpsat_timeout_seconds": 60,
 }
 
 
