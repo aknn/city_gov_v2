@@ -158,10 +158,19 @@ CREW_MAPPING = {
 
 # Default resource capacities per week
 RESOURCE_CAPACITIES = {
-    "water_crew": 3,
-    "electrical_crew": 2,
-    "construction_crew": 5,
-    "general_crew": 4,
+    "water_crew": 8,        # Increased from 3
+    "electrical_crew": 6,   # Increased from 2
+    "construction_crew": 12, # Increased from 5
+    "general_crew": 10,     # Increased from 4
+}
+
+
+# High-capacity scenario (for testing)
+RESOURCE_CAPACITIES_HIGH = {
+    "water_crew": 15,
+    "electrical_crew": 12,
+    "construction_crew": 20,
+    "general_crew": 18,
 }
 
 

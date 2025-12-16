@@ -90,6 +90,10 @@ def init_database(db_path: str = DB_PATH) -> None:
             CHECK(mandate_tier IN ('none', 'advisory', 'required', 'court_ordered')),
         estimated_cost INTEGER,
         urgency_days INTEGER DEFAULT 90,
+        -- Optional hints for formation agent
+        estimated_duration_weeks INTEGER,
+        recommended_crew_size INTEGER,
+        crew_type TEXT,
         FOREIGN KEY(issue_id) REFERENCES issues(issue_id)
     )
     """)
@@ -523,12 +527,141 @@ def seed_large_scenario(db_path: str = DB_PATH, num_issues: int = 30) -> None:
     print(f"✓ Large scenario seeded ({num_issues} issues)")
 
 
+def seed_balanced_scenario(db_path: str = DB_PATH, num_issues: int = 25) -> None:
+    """
+    Seed a balanced scenario with more schedulable projects.
+    
+    Key differences from seed_large_scenario:
+    - Smaller crew requirements (1-4 instead of 3-10)
+    - Shorter durations (2-8 weeks instead of 6-24)
+    - More realistic urgency spread
+    - Better mix of priorities
+    """
+    import random
+    random.seed(123)  # Different seed for variety
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Clear existing data
+    cursor.execute("DELETE FROM schedule_tasks")
+    cursor.execute("DELETE FROM portfolio_decisions")
+    cursor.execute("DELETE FROM project_candidates")
+    cursor.execute("DELETE FROM scoring_audit")
+    cursor.execute("DELETE FROM issue_signals")
+    cursor.execute("DELETE FROM issues")
+    cursor.execute("DELETE FROM audit_log")
+    cursor.execute("UPDATE resource_calendar SET soft_allocated = 0, hard_allocated = 0")
+    
+    # Balanced issue templates with smaller resource requirements
+    issue_templates = [
+        # (title_template, category, safety_tier, mandate_tier, cost_range, duration_range, crew_size_range, crew_type, urgency_range)
+        # Critical/Mandated - still high priority but feasible
+        ("Water Main Repair - Sector {}", "Water", "critical", "court_ordered", (2_000_000, 5_000_000), (3, 6), (2, 4), "water_crew", (7, 14)),
+        ("Hospital Generator Check - {}", "Health", "critical", "required", (500_000, 2_000_000), (2, 4), (2, 3), "electrical_crew", (7, 14)),
+        ("Bridge Safety Fix - {} St", "Infrastructure", "severe", "required", (1_000_000, 3_000_000), (3, 5), (3, 5), "construction_crew", (14, 21)),
+        
+        # Moderate priority - good balance
+        ("Fire Alarm Upgrade - Station {}", "Public Safety", "moderate", "required", (200_000, 600_000), (2, 4), (1, 2), "electrical_crew", (21, 30)),
+        ("School Crossing Safety - {}", "Education", "moderate", "advisory", (100_000, 300_000), (2, 3), (1, 2), "general_crew", (14, 30)),
+        ("Street Light Repair - Zone {}", "Infrastructure", "moderate", "none", (50_000, 150_000), (1, 2), (1, 2), "electrical_crew", (21, 45)),
+        ("Sidewalk Repair - {} Ave", "Transportation", "moderate", "none", (80_000, 200_000), (2, 3), (2, 3), "construction_crew", (30, 45)),
+        
+        # Lower priority but quick wins
+        ("Park Bench Install - {} Park", "Recreation", "none", "none", (20_000, 80_000), (1, 2), (1, 2), "general_crew", (45, 90)),
+        ("Pothole Patch - Sector {}", "Transportation", "none", "none", (30_000, 100_000), (1, 2), (1, 2), "construction_crew", (30, 60)),
+        ("Playground Equipment - {} Park", "Recreation", "none", "none", (50_000, 150_000), (2, 3), (1, 2), "general_crew", (60, 90)),
+        ("Tree Planting - Area {}", "Environment", "none", "none", (15_000, 50_000), (1, 2), (1, 2), "general_crew", (60, 120)),
+        ("Drainage Clear - Sector {}", "Water", "none", "advisory", (40_000, 120_000), (1, 2), (1, 2), "water_crew", (30, 60)),
+        ("Bus Stop Shelter - Stop {}", "Transportation", "none", "none", (25_000, 75_000), (1, 2), (1, 2), "construction_crew", (45, 90)),
+        ("Community Garden - Site {}", "Environment", "none", "none", (30_000, 100_000), (2, 3), (1, 2), "general_crew", (60, 120)),
+        ("Bike Lane Marking - {} Rd", "Transportation", "none", "none", (20_000, 60_000), (1, 2), (1, 2), "construction_crew", (45, 90)),
+    ]
+    
+    sector_names = ["Alpha", "Beta", "Gamma", "Delta", "North", "South", "East", "West", "Central"]
+    street_names = ["Main", "Oak", "Elm", "Cedar", "Pine", "Maple", "First", "Second", "Third"]
+    park_names = ["Central", "Riverside", "Memorial", "Liberty", "Heritage", "Sunset", "Valley"]
+    
+    issues_data = []
+    signals_data = []
+    
+    for i in range(1, num_issues + 1):
+        template = random.choice(issue_templates)
+        title_template, category, safety, mandate, cost_range, dur_range, crew_range, crew_type, urg_range = template
+        
+        # Generate title
+        if "{}" in title_template:
+            if "Sector" in title_template or "Zone" in title_template or "Area" in title_template:
+                name = random.choice(sector_names)
+            elif "St" in title_template or "Ave" in title_template or "Rd" in title_template:
+                name = random.choice(street_names)
+            elif "Park" in title_template:
+                name = random.choice(park_names)
+            elif "Stop" in title_template or "Site" in title_template or "Station" in title_template:
+                name = str(random.randint(1, 20))
+            else:
+                name = random.choice(sector_names)
+            title = title_template.format(name)
+        else:
+            title = title_template
+        
+        # Generate values
+        cost = random.randint(cost_range[0], cost_range[1])
+        duration = random.randint(dur_range[0], dur_range[1])
+        crew_size = random.randint(crew_range[0], crew_range[1])
+        urgency = random.randint(urg_range[0], urg_range[1])
+        population = random.randint(5000, 150000)
+        complaints = random.randint(20, 300) if safety in ("critical", "severe") else random.randint(5, 80)
+        district = random.randint(1, 8)
+        
+        issues_data.append((
+            i, title, category, f"Description for {title}", 
+            random.choice(["citizen_complaint", "facility_inspection", "emergency_report", "council_request"]),
+            district, "OPEN"
+        ))
+        
+        # Store crew_size in description for formation agent to extract
+        # Actually, let's store it in a way the agent can use - we'll add estimated_duration to signals
+        signals_data.append((
+            i, population, complaints, safety, mandate, cost, urgency, duration, crew_size, crew_type
+        ))
+    
+    cursor.executemany(
+        """INSERT INTO issues 
+           (issue_id, title, category, description, source, district_id, status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        issues_data
+    )
+    
+    # Extended signals with duration and crew hints
+    for signal in signals_data:
+        cursor.execute(
+            """INSERT INTO issue_signals 
+               (issue_id, population_affected, complaint_count, safety_tier, mandate_tier, 
+                estimated_cost, urgency_days, estimated_duration_weeks, recommended_crew_size, crew_type) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            signal
+        )
+    
+    conn.commit()
+    conn.close()
+    print(f"✓ Balanced scenario seeded ({num_issues} issues)")
+
+
 def init_large_scenario(db_path: str = DB_PATH, num_issues: int = 30) -> None:
     """Initialize database with large scenario for CP-SAT testing."""
     init_database(db_path)
     seed_districts(db_path)
     seed_resource_calendar(db_path, weeks=16)  # Extended horizon for more projects
     seed_large_scenario(db_path, num_issues)
+
+
+def init_balanced_scenario(db_path: str = DB_PATH, num_issues: int = 25) -> None:
+    """Initialize database with balanced scenario - more schedulable projects."""
+    init_database(db_path)
+    seed_districts(db_path)
+    seed_resource_calendar(db_path, weeks=12)
+    seed_balanced_scenario(db_path, num_issues)
 
 
 if __name__ == "__main__":
