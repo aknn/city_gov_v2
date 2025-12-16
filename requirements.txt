@@ -1,0 +1,25 @@
+# Municipal Value-Score System v2
+# Core dependencies
+
+# OpenAI Agents SDK
+openai-agents>=0.1.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Database (SQLite included in Python stdlib)
+# No additional DB dependencies needed
+
+# Math/stats for scoring
+# numpy>=1.24.0  # Optional: for advanced stats
+
+# OR-Tools for CP-SAT scheduler (optional, greedy-first approach)
+# ortools>=9.7.0  # Uncomment when CP-SAT escalation needed
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Development
+# pytest>=7.0.0
+# black>=23.0.0
+# mypy>=1.0.0
