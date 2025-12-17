@@ -898,5 +898,5 @@ This project is licensed under the MIT License.
 
 ---
 
-*Documentation generated: December 2024*
+*Documentation generated: December 2025*
 *Municipal Value-Score System v2*
