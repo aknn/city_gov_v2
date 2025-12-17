@@ -27,7 +27,7 @@
 
 ## Introduction
 
-The Municipal Value-Score System v2 is an AI-powered solution for municipal project prioritization. It replaces traditional risk-only scoring with a **composite value-score** that balances multiple factors:
+The Municipal Value-Score System v2 is an AI-powered solution for municipal project prioritization. It builds on previous risk scoring with a **composite value-score** that balances multiple factors:
 
 - **Risk Mitigation** — Safety and legal mandates
 - **Citizen Benefit** — Population served per dollar
@@ -894,7 +894,7 @@ This project is licensed under the MIT License.
 ### v1.0.0
 
 - Initial risk-based prioritization system
-- Single-agent architecture
+- 3-agent pipeline architecture
 
 ---
 
